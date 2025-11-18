@@ -135,6 +135,7 @@ They cover the full lifecycle of the escrow:
 ### Running Tests
 ```bash
 # Commands to run your tests
+cd anchor_project
 anchor test
 ```
 
