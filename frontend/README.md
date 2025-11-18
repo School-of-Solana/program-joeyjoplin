@@ -1,23 +1,23 @@
-# ☕ Coffee Exchange — A Solana-based P2P Coffee Commodities Escrow
+# Coffee Exchange — A Solana-based P2P Coffee Commodities Escrow
 
 Coffee Exchange is a decentralized peer-to-peer swap market for coffee commodity tokens built entirely on **Solana**, featuring on-chain escrow vaults using PDAs, Maker/Taker settlement flows, SPL token minting directly from the UI, and a fully trustless exchange mechanism. This project includes a complete frontend, Solana program, and Anchor test suite.
 
 ---
 
-## 🚀 Live Frontend
+## Live Frontend
 
 **Deployed Frontend:**  
-_Add your deployed URL here_
+https://coffee-exchange-six.vercel.app/
 
 ---
 
-## 🔑 Program ID
+## Program ID
 
 9VdKGKXs5ZJd6Cr9GtJcPP8fdUSmRgvkYScvhi1oPkFc
 
 ---
 
-## 📘 Overview
+## Overview
 
 ### What the dApp Does
 
@@ -38,20 +38,20 @@ This dApp demonstrates a real commodity trading mechanism powered entirely by So
 
 ---
 
-## 🧠 Architecture
+##  Architecture
 
 The architecture follows a trustless Maker ↔ PDA ↔ Taker flow:
 
 Maker Wallet <----> Program PDA Vault <----> Taker Wallet
 
-### ✔ SPL Token Mints
+### SPL Token Mints
 
 Created directly from the frontend during the first **Harvest**, using:
 
 - 0 decimal SPL mints
 - Maker wallet as mint + freeze authority
 
-### ✔ PDA-based Vault
+### PDA-based Vault
 
 Each offer creates a deterministic PDA:
 
@@ -64,7 +64,7 @@ This PDA:
 - Signs withdrawals during settlement  
 - Ensures no one can tamper with locked tokens  
 
-### ✔ Instructions
+### Instructions
 
 #### **1. make_offer**
 
@@ -83,19 +83,16 @@ This PDA:
 
 ---
 
-## 📦 Folder Structure
+## Folder Structure
 
-/anchor_project
-/programs/coffee_exchange
-/tests
-Anchor.toml
+/anchor_project</br>
+  /programs/coffee_exchange</br>
+  /tests</br>
+Anchor.toml</br></br>
 
-/frontend
-src/App.tsx
-src/components/
-
-yaml
-Copiar código
+/frontend</br>
+  /src/App.tsx</br>
+  /src/components</br>
 
 ---
 
@@ -104,85 +101,86 @@ Copiar código
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/your-org/coffee-exchange.git
-cd coffee-exchange
-🖥️ Frontend
-2. Install dependencies
-bash
+git clone https://github.com/School-of-Solana/program-joeyjoplin.git
+```
+ 
+### 2. Build and test Smart Contract (Anchor)
+```bash
+1. Build the Solana program
+
+cd anchor_project
+anchor build
+
+2. Run Anchor tests on localnet
+Ensure Anchor.toml provider is:
+
+[provider]
+cluster = "localnet"
+wallet = "~/.config/solana/id.json"
+
+3. Run test
+anchor test
+```
+
+### 3. Run Frontend
+```bash
+1. Install dependencies
+
 cd frontend
 npm install
-3. Create .env
-env
+
+2. Create .env
 
 VITE_RPC_ENDPOINT=https://api.devnet.solana.com
 VITE_COFFEE_EXCHANGE_PROGRAM_ID=9VdKGKXs5ZJd6Cr9GtJcPP8fdUSmRgvkYScvhi1oPkFc
 
-4. Run frontend
-bash
+3. Run frontend
+
 npm run dev
-Open in browser:
+
+4. Open in browser
 
 http://localhost:5173
+```
 
-🔧 Smart Contract (Anchor)
-5. Build the Solana program
-bash
-
-cd anchor_project
-anchor build
-6. Run Anchor tests on localnet
-Ensure Anchor.toml provider is:
-
-toml
-
-cluster = "localnet"
-Then:
-bash
-
-anchor test
-
-🖥️ Using the dApp
+## Using the dApp
 1. Connect Wallet
-Click the wallet button to connect Phantom (Maker).
+  - Click the wallet button to connect Phantom (Maker).
 
 2. Harvest Coffee Beans
-Creates Arabica + Robusta SPL mints (first time)
-
-Mints 100 tokens of each type to Maker
+  - Creates Arabica + Robusta SPL mints (first time)
+  - Mints 100 tokens of each type to Maker
 
 3. Create an Offer (Maker)
 Input:
-Amount of Arabica to offer
-Amount of Robusta requested
+  - Amount of Arabica to offer
+  - Amount of Robusta requested
 
 The program:
-Derives PDA
-Creates vault
-Locks Arabica inside the vault
+  - Derives PDA
+  - Creates vault
+  - Locks Arabica inside the vault
 
 4. Take Offer (Taker)
-Simulated Keypair mints/holds Robusta
-Sends Robusta → Maker
-Receives Arabica from PDA vault
-Vault and offer are closed
+- Simulated Keypair mints/holds Robusta
+- Sends Robusta → Maker
+- Receives Arabica from PDA vault
+- Vault and offer are closed
 
-🔒 Security Model
-PDA exclusively controls escrow vault
-TransferChecked prevents tampered mint/decimal changes
-Deterministic PDAs and ATAs prevent spoofing
-Maker cannot take own offer
-No trust needed between participants
-Vault always closes → no stranded funds
+## Security Model
+- PDA exclusively controls escrow vault
+- TransferChecked prevents tampered mint/decimal changes
+- Deterministic PDAs and ATAs prevent spoofing
+- Maker cannot take own offer
+- No trust needed between participants
+- Vault always closes → no stranded funds
 
-🧭 Roadmap
-Add cancel offer instruction
-Add real Taker wallet support
-Add offer listing page
-Multi-offer orderbook
-Indexer + API
-Mobile support
-Solana Pay integration
+## Roadmap
+- Add cancel offer instruction
+- Add real Taker wallet support
+- Add offer listing page
+- Multi-offer orderbook
 
-🙌 Author
+### Author
 Daniele Rodrigues dos Santos
 Solana Developer & Web3 Builder
