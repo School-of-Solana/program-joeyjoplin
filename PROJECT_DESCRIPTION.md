@@ -1,6 +1,6 @@
 # Project Description
 
-**Deployed Frontend URL:** [https://coffee-exchange-six.vercel.app/]
+**Deployed Frontend URL:** [https://coffee-exchange-ochre.vercel.app/]
 
 **Solana Program ID:** 9VdKGKXs5ZJd6Cr9GtJcPP8fdUSmRgvkYScvhi1oPkFc
 
