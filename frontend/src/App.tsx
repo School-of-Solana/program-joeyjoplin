@@ -44,17 +44,25 @@ const RPC_ENDPOINT =
 const LOCAL_STORAGE_MINT_A_KEY = "coffee_exchange_mint_arabica";
 const LOCAL_STORAGE_MINT_B_KEY = "coffee_exchange_mint_robusta";
 
-// Program ID for your on-chain coffee_exchange program
+// Program ID for your on-chain coffee_exchange program.
+// We keep it possibly undefined so we can check and show a nice error
+// instead of crashing with a "_bn" error if the env var is missing.
 const COFFEE_EXCHANGE_PROGRAM_ID = import.meta.env
-  .VITE_COFFEE_EXCHANGE_PROGRAM_ID as string;
+  .VITE_COFFEE_EXCHANGE_PROGRAM_ID as string | undefined;
 
 // ---------------------- UI helpers ----------------------
 
+/**
+ * Truncates a long public key for nicer display in the UI.
+ */
 function truncate(addr: string) {
   if (!addr) return "";
   return `${addr.slice(0, 4)}...${addr.slice(-4)}`;
 }
 
+/**
+ * Small banner component to show success / error messages.
+ */
 function StatusBanner({ status }: { status: StatusMessage | null }) {
   if (!status) return null;
 
@@ -77,17 +85,20 @@ function StatusBanner({ status }: { status: StatusMessage | null }) {
 
 // ---------------------- Low-level Solana helpers ----------------------
 
-// Sends a transaction that may need both:
-//  - local signers (e.g. newly generated Keypairs), and
-//  - the connected Phantom wallet as fee payer.
+/**
+ * Sends a transaction that may need both:
+ *  - local signers (e.g. newly generated Keypairs), and
+ *  - the connected Phantom wallet as fee payer.
+ */
 async function sendAndConfirmWithWallet(
   connection: Connection,
   wallet: any, // Phantom provider from window.solana
   transaction: Transaction,
   extraSigners: Keypair[] = []
 ): Promise<string> {
+  // Use "confirmed" on devnet to reduce chances of "Blockhash not found"
   const { blockhash, lastValidBlockHeight } =
-    await connection.getLatestBlockhash("finalized");
+    await connection.getLatestBlockhash("confirmed");
 
   transaction.recentBlockhash = blockhash;
   transaction.feePayer = wallet.publicKey;
@@ -96,50 +107,92 @@ async function sendAndConfirmWithWallet(
     transaction.partialSign(...extraSigners);
   }
 
+  // Let Phantom sign the transaction
   const signed = await wallet.signTransaction(transaction);
-  const signature = await connection.sendRawTransaction(signed.serialize());
-  await connection.confirmTransaction(
-    {
-      signature,
-      blockhash,
-      lastValidBlockHeight,
-    },
-    "confirmed"
-  );
 
-  return signature;
+  try {
+    // Preflight simulation happens here.
+    const signature = await connection.sendRawTransaction(signed.serialize(), {
+      skipPreflight: false,
+    });
+
+    // Confirm using the same blockhash / lastValidBlockHeight pair
+    await connection.confirmTransaction(
+      {
+        signature,
+        blockhash,
+        lastValidBlockHeight,
+      },
+      "confirmed"
+    );
+
+    console.log("✅ TX confirmed:", signature);
+    return signature;
+  } catch (err: any) {
+    console.error("❌ Error sending transaction:", err);
+
+    // If this is a SendTransactionError, we can try to print logs for debugging
+    // @ts-ignore - narrow typing at runtime
+    if (err && typeof err.getLogs === "function") {
+      const logs = await err.getLogs();
+      console.error("Transaction logs:", logs);
+    }
+
+    throw err;
+  }
 }
 
-// Sends a transaction using ONLY a local Keypair as fee payer and signer.
-// Used by the Taker when calling `take_offer`.
+/**
+ * Sends a transaction using ONLY a local Keypair as fee payer and signer.
+ * Used by the Taker when calling `take_offer`.
+ */
 async function sendAndConfirmWithLocalSigner(
   connection: Connection,
   transaction: Transaction,
   signer: Keypair
 ): Promise<string> {
+  // Same idea here: use "confirmed" for better compatibility on devnet
   const { blockhash, lastValidBlockHeight } =
-    await connection.getLatestBlockhash("finalized");
+    await connection.getLatestBlockhash("confirmed");
 
   transaction.recentBlockhash = blockhash;
   transaction.feePayer = signer.publicKey;
 
   transaction.sign(signer);
 
-  const signature = await connection.sendRawTransaction(transaction.serialize());
-  await connection.confirmTransaction(
-    {
-      signature,
-      blockhash,
-      lastValidBlockHeight,
-    },
-    "confirmed"
-  );
+  try {
+    const signature = await connection.sendRawTransaction(transaction.serialize(), {
+      skipPreflight: false,
+    });
 
-  return signature;
+    await connection.confirmTransaction(
+      {
+        signature,
+        blockhash,
+        lastValidBlockHeight,
+      },
+      "confirmed"
+    );
+
+    console.log("✅ Local-signer TX confirmed:", signature);
+    return signature;
+  } catch (err: any) {
+    console.error("❌ Error sending local-signer transaction:", err);
+
+    // @ts-ignore - try to get logs if available
+    if (err && typeof err.getLogs === "function") {
+      const logs = await err.getLogs();
+      console.error("Transaction logs:", logs);
+    }
+
+    throw err;
+  }
 }
 
-// Convert a JS number (<= 2^53) to a 8-byte little-endian buffer (u64)
-// using BigInt. This matches Rust's `to_le_bytes()` for u64.
+/**
+ * Convert a JS number (<= 2^53) to an 8-byte little-endian buffer (u64)
+ * using BigInt. This matches Rust's `to_le_bytes()` for u64.
+ */
 function u64ToLeBuffer(value: number): Buffer {
   const big = BigInt(value);
   const buf = Buffer.alloc(8);
@@ -147,8 +200,10 @@ function u64ToLeBuffer(value: number): Buffer {
   return buf;
 }
 
-// Compute Anchor-style instruction discriminator:
-// first 8 bytes of sha256("global:<name>")
+/**
+ * Compute Anchor-style instruction discriminator:
+ * first 8 bytes of sha256("global:<name>")
+ */
 async function getAnchorDiscriminator(globalName: string): Promise<Buffer> {
   const encoder = new TextEncoder();
   const data = encoder.encode(globalName);
@@ -157,12 +212,15 @@ async function getAnchorDiscriminator(globalName: string): Promise<Buffer> {
   return Buffer.from(fullHash.slice(0, 8));
 }
 
-// Creates a new SPL mint with 0 decimals, using the connected wallet as:
-//  - fee payer
-//  - mint authority
-//  - freeze authority
-// Also creates the associated token account (ATA) for the wallet
-// and mints `mintAmount` tokens into it.
+/**
+ * Creates a new SPL mint with 0 decimals, using the connected wallet as:
+ *  - fee payer
+ *  - mint authority
+ *  - freeze authority
+ *
+ * Also creates the associated token account (ATA) for the wallet
+ * and mints `mintAmount` tokens into it.
+ */
 async function createMintAndMintToWallet(
   connection: Connection,
   wallet: any,
@@ -170,9 +228,11 @@ async function createMintAndMintToWallet(
 ): Promise<{ mint: PublicKey; ata: PublicKey }> {
   const walletPubkey = wallet.publicKey as PublicKey;
 
+  // Generate a new mint account
   const mintKeypair = Keypair.generate();
   const lamports = await connection.getMinimumBalanceForRentExemption(MINT_SIZE);
 
+  // Derive ATA for this mint and the wallet owner
   const ata = await getAssociatedTokenAddress(
     mintKeypair.publicKey,
     walletPubkey
@@ -180,6 +240,7 @@ async function createMintAndMintToWallet(
 
   const tx = new Transaction();
 
+  // 1) Create the mint account
   tx.add(
     SystemProgram.createAccount({
       fromPubkey: walletPubkey,
@@ -187,20 +248,32 @@ async function createMintAndMintToWallet(
       space: MINT_SIZE,
       lamports,
       programId: TOKEN_PROGRAM_ID,
-    }),
+    })
+  );
+
+  // 2) Initialize mint with 0 decimals
+  tx.add(
     createInitializeMintInstruction(
       mintKeypair.publicKey,
       0,
       walletPubkey,
       walletPubkey,
       TOKEN_PROGRAM_ID
-    ),
+    )
+  );
+
+  // 3) Create the wallet's ATA for this mint
+  tx.add(
     createAssociatedTokenAccountInstruction(
       walletPubkey,
       ata,
       walletPubkey,
       mintKeypair.publicKey
-    ),
+    )
+  );
+
+  // 4) Mint tokens to the wallet's ATA
+  tx.add(
     createMintToInstruction(
       mintKeypair.publicKey,
       ata,
@@ -209,12 +282,15 @@ async function createMintAndMintToWallet(
     )
   );
 
+  // The mintKeypair is an extra signer
   await sendAndConfirmWithWallet(connection, wallet, tx, [mintKeypair]);
 
   return { mint: mintKeypair.publicKey, ata };
 }
 
-// Mints more tokens to an existing mint and its ATA for the wallet.
+/**
+ * Mints more tokens to an existing mint and its ATA for the wallet.
+ */
 async function mintMoreToExistingMint(
   connection: Connection,
   wallet: any,
@@ -226,6 +302,7 @@ async function mintMoreToExistingMint(
   const ata = await getAssociatedTokenAddress(mintAddress, walletPubkey);
   const tx = new Transaction();
 
+  // If the ATA does not exist yet, create it before minting
   const ataInfo = await connection.getAccountInfo(ata);
   if (!ataInfo) {
     tx.add(
@@ -238,6 +315,7 @@ async function mintMoreToExistingMint(
     );
   }
 
+  // Mint more tokens into the ATA
   tx.add(
     createMintToInstruction(mintAddress, ata, walletPubkey, mintAmount)
   );
@@ -245,7 +323,9 @@ async function mintMoreToExistingMint(
   await sendAndConfirmWithWallet(connection, wallet, tx);
 }
 
-// Reads on-chain balances for the two mints (if they exist) for the given owner.
+/**
+ * Reads on-chain balances for the two mints (if they exist) for the given owner.
+ */
 async function fetchOnChainBalances(
   connection: Connection,
   owner: PublicKey,
@@ -275,8 +355,10 @@ async function fetchOnChainBalances(
   return { balanceA: uiAmountA, balanceB: uiAmountB };
 }
 
-// Derives the PDA for an offer using the same seeds as in your Rust program:
-// seeds = [b"offer", maker.key().as_ref(), &id.to_le_bytes()]
+/**
+ * Derives the PDA for an offer using the same seeds as in your Rust program:
+ * seeds = [b"offer", maker.key().as_ref(), &id.to_le_bytes()]
+ */
 function deriveOfferPda(
   programId: PublicKey,
   maker: PublicKey,
@@ -312,7 +394,7 @@ function App() {
   const [lastOfferId, setLastOfferId] = useState<number | null>(null);
   const [lastOfferWantedB, setLastOfferWantedB] = useState<number | null>(null);
 
-  // Separate processing flags
+  // Separate processing flags so buttons do not block each other
   const [isHarvesting, setIsHarvesting] = useState(false);
   const [isCreatingOffer, setIsCreatingOffer] = useState(false);
   const [isTakingOffer, setIsTakingOffer] = useState(false);
@@ -383,6 +465,16 @@ function App() {
 
   // ------------------------- Harvest -------------------------
 
+  /**
+   * Harvest mints a fresh batch of coffee tokens on devnet.
+   * On the first harvest:
+   *  - creates two new SPL mints (Arabica / Robusta)
+   *  - mints INITIAL_MINT_AMOUNT to the maker wallet for each
+   *  - caches mint addresses in localStorage
+   *
+   * On subsequent harvests:
+   *  - only calls mintTo for each existing mint
+   */
   const handleHarvest = async () => {
     if (!isConnected || !makerAddress || !selectedAccount) {
       showError("Please connect your wallet before harvesting new coffee beans.");
@@ -405,6 +497,7 @@ function App() {
       let mintAAddress = localStorage.getItem(LOCAL_STORAGE_MINT_A_KEY);
       let mintBAddress = localStorage.getItem(LOCAL_STORAGE_MINT_B_KEY);
 
+      // First-time harvest: deploy new mints
       if (!mintAAddress || !mintBAddress) {
         const { mint: mintA } = await createMintAndMintToWallet(
           connection,
@@ -427,6 +520,7 @@ function App() {
           `First harvest created 🌾 New mints deployed on devnet and ${INITIAL_MINT_AMOUNT} tokens of each type were minted to your wallet.`
         );
       } else {
+        // Subsequent harvest: only mint more of the existing mints
         await mintMoreToExistingMint(
           connection,
           wallet,
@@ -445,6 +539,7 @@ function App() {
         );
       }
 
+      // Refresh Maker balances after harvest
       const { balanceA, balanceB } = await fetchOnChainBalances(
         connection,
         owner,
@@ -466,6 +561,14 @@ function App() {
 
   // ------------------------- make_offer (Maker) -------------------------
 
+  /**
+   * Creates an on-chain offer using the coffee_exchange::make_offer instruction.
+   * It:
+   *  - derives the offer PDA
+   *  - derives the vault ATA for mint A, owned by the PDA
+   *  - builds the Anchor-style instruction data
+   *  - sends the transaction via the connected wallet
+   */
   const handleCreateOffer = async (event: React.FormEvent) => {
     event.preventDefault();
 
@@ -502,6 +605,14 @@ function App() {
       return;
     }
 
+    // Defensive check: program ID must be configured in .env
+    if (!COFFEE_EXCHANGE_PROGRAM_ID) {
+      showError(
+        "Coffee Exchange program ID is not configured. Please set VITE_COFFEE_EXCHANGE_PROGRAM_ID in your .env file."
+      );
+      return;
+    }
+
     const mintAAddress = localStorage.getItem(LOCAL_STORAGE_MINT_A_KEY);
     const mintBAddress = localStorage.getItem(LOCAL_STORAGE_MINT_B_KEY);
 
@@ -509,26 +620,56 @@ function App() {
       showError(
         "No coffee mints found on this session. Please run a Harvest at least once before creating an offer."
       );
+      console.error("Missing mints in localStorage when creating offer:", {
+        mintAAddress,
+        mintBAddress,
+      });
       return;
     }
 
     setIsCreatingOffer(true);
+    setStatus(null);
+
     try {
       const connection = new Connection(RPC_ENDPOINT, "confirmed");
-      const makerPubkey = new PublicKey(selectedAccount.address);
-      const mintA = new PublicKey(mintAAddress);
-      const mintB = new PublicKey(mintBAddress);
-      const programId = new PublicKey(COFFEE_EXCHANGE_PROGRAM_ID);
 
+      // Validate and build all public keys. If any is invalid, we catch and show a nice error.
+      let makerPubkey: PublicKey;
+      let mintA: PublicKey;
+      let mintB: PublicKey;
+      let programId: PublicKey;
+
+      try {
+        makerPubkey = new PublicKey(selectedAccount.address);
+        mintA = new PublicKey(mintAAddress);
+        mintB = new PublicKey(mintBAddress);
+        programId = new PublicKey(COFFEE_EXCHANGE_PROGRAM_ID);
+      } catch (e) {
+        console.error("Invalid public key configuration for offer:", e, {
+          maker: selectedAccount.address,
+          mintAAddress,
+          mintBAddress,
+          COFFEE_EXCHANGE_PROGRAM_ID,
+        });
+        showError(
+          "One of the configured addresses (maker, mints, or program ID) is invalid. Please check your .env and reload the page."
+        );
+        return;
+      }
+
+      // Offer ID - here we use a timestamp for demo purposes.
       const offerId = Date.now(); // safe JS integer
 
+      // Derive PDA for the offer (matches Rust seeds)
       const [offerPda] = deriveOfferPda(programId, makerPubkey, offerId);
 
+      // Maker's ATA for Token A
       const makerTokenAccountA = await getAssociatedTokenAddress(
         mintA,
         makerPubkey
       );
 
+      // Vault ATA for Token A, owned by the offer PDA
       const vault = await getAssociatedTokenAddress(
         mintA,
         offerPda,
@@ -537,6 +678,7 @@ function App() {
         ASSOCIATED_TOKEN_PROGRAM_ID
       );
 
+      // Build Anchor-style data for make_offer(id, token_a_offered_amount, token_b_wanted_amount)
       const discriminator = await getAnchorDiscriminator("global:make_offer");
       const data = Buffer.concat([
         discriminator,
@@ -546,12 +688,12 @@ function App() {
       ]);
 
       const keys = [
-        { pubkey: makerPubkey, isSigner: true, isWritable: true },
-        { pubkey: mintA, isSigner: false, isWritable: false },
-        { pubkey: mintB, isSigner: false, isWritable: false },
-        { pubkey: makerTokenAccountA, isSigner: false, isWritable: true },
-        { pubkey: offerPda, isSigner: false, isWritable: true },
-        { pubkey: vault, isSigner: false, isWritable: true },
+        { pubkey: makerPubkey, isSigner: true, isWritable: true }, // maker
+        { pubkey: mintA, isSigner: false, isWritable: false }, // token_mint_a
+        { pubkey: mintB, isSigner: false, isWritable: false }, // token_mint_b
+        { pubkey: makerTokenAccountA, isSigner: false, isWritable: true }, // maker_token_account_a
+        { pubkey: offerPda, isSigner: false, isWritable: true }, // offer account PDA
+        { pubkey: vault, isSigner: false, isWritable: true }, // vault ATA
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
         { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
         {
@@ -569,11 +711,23 @@ function App() {
 
       const tx = new Transaction().add(ix);
 
+      console.log("Sending make_offer transaction with:", {
+        offerId,
+        amountA,
+        amountB,
+        maker: makerPubkey.toBase58(),
+        mintA: mintA.toBase58(),
+        mintB: mintB.toBase58(),
+        offerPda: offerPda.toBase58(),
+        vault: vault.toBase58(),
+      });
+
       await sendAndConfirmWithWallet(connection, wallet, tx);
 
       setLastOfferId(offerId);
       setLastOfferWantedB(amountB);
 
+      // Refresh balances after locking Token A into the vault
       const { balanceA, balanceB } = await fetchOnChainBalances(
         connection,
         makerPubkey,
@@ -602,6 +756,16 @@ function App() {
 
   // ------------------------- take_offer (Taker) -------------------------
 
+  /**
+   * Takes the last on-chain offer using the coffee_exchange::take_offer instruction.
+   * This uses a simulated Taker Keypair (not the connected wallet) and:
+   *  - funds the Taker with some SOL (from Maker) if needed
+   *  - makes sure the Taker has enough Robusta (mint B) to pay the offer
+   *  - calls `take_offer` where:
+   *      - Taker sends Robusta to Maker
+   *      - PDA vault sends Arabica to Taker
+   *      - vault and offer accounts are closed
+   */
   const handleTakeOffer = async () => {
     if (!isConnected || !makerAddress || !selectedAccount) {
       showError("Connect your wallet (Maker) before taking an offer.");
@@ -628,17 +792,49 @@ function App() {
       showError(
         "No coffee mints found for this session. Please run a Harvest and create an offer first."
       );
+      console.error(
+        "Missing mints in localStorage when trying to take an offer:",
+        { mintAAddress, mintBAddress }
+      );
+      return;
+    }
+
+    if (!COFFEE_EXCHANGE_PROGRAM_ID) {
+      showError(
+        "Coffee Exchange program ID is not configured. Please set VITE_COFFEE_EXCHANGE_PROGRAM_ID in your .env file."
+      );
       return;
     }
 
     setIsTakingOffer(true);
     try {
       const connection = new Connection(RPC_ENDPOINT, "confirmed");
-      const makerPubkey = new PublicKey(selectedAccount.address);
-      const takerPubkey = takerKeypair.publicKey;
-      const mintA = new PublicKey(mintAAddress);
-      const mintB = new PublicKey(mintBAddress);
-      const programId = new PublicKey(COFFEE_EXCHANGE_PROGRAM_ID);
+
+      let makerPubkey: PublicKey;
+      let takerPubkey: PublicKey;
+      let mintA: PublicKey;
+      let mintB: PublicKey;
+      let programId: PublicKey;
+
+      try {
+        makerPubkey = new PublicKey(selectedAccount.address);
+        takerPubkey = takerKeypair.publicKey;
+        mintA = new PublicKey(mintAAddress);
+        mintB = new PublicKey(mintBAddress);
+        programId = new PublicKey(COFFEE_EXCHANGE_PROGRAM_ID);
+      } catch (e) {
+        console.error("Invalid public key configuration for take_offer:", e, {
+          maker: selectedAccount.address,
+          taker: takerKeypair.publicKey.toBase58(),
+          mintAAddress,
+          mintBAddress,
+          COFFEE_EXCHANGE_PROGRAM_ID,
+        });
+        showError(
+          "One of the configured addresses (maker, taker, mints, or program ID) is invalid. Please check configuration and reload."
+        );
+        return;
+      }
 
       // 1) Ensure Taker has enough SOL (funded by Maker instead of airdrop)
       const currentBalance = await connection.getBalance(takerPubkey);
@@ -654,6 +850,9 @@ function App() {
         );
 
         await sendAndConfirmWithWallet(connection, wallet, txFund);
+        console.log(
+          `Funded taker with 0.1 SOL to cover transaction fees (current balance was ${currentBalance} lamports).`
+        );
       }
 
       // 2) Ensure Taker has an ATA for Token B with enough Robusta
@@ -669,6 +868,7 @@ function App() {
           : INITIAL_MINT_AMOUNT;
 
       if (!infoB) {
+        // No ATA yet: create it and mint the required Robusta
         const txFundTaker = new Transaction().add(
           createAssociatedTokenAccountInstruction(
             wallet.publicKey,
@@ -686,6 +886,7 @@ function App() {
 
         await sendAndConfirmWithWallet(connection, wallet, txFundTaker);
       } else {
+        // ATA exists: check balance and top up if needed
         const balResult = await connection
           .getTokenAccountBalance(takerTokenAccountB)
           .catch(() => null);
@@ -758,7 +959,17 @@ function App() {
 
       const tx = new Transaction().add(ix);
 
-      // 5) Taker pays fees and signs
+      console.log("Sending take_offer transaction with:", {
+        offerId: lastOfferId,
+        maker: makerPubkey.toBase58(),
+        taker: takerPubkey.toBase58(),
+        mintA: mintA.toBase58(),
+        mintB: mintB.toBase58(),
+        offerPda: offerPda.toBase58(),
+        vault: vault.toBase58(),
+      });
+
+      // 5) Taker pays fees and signs using the local Keypair
       await sendAndConfirmWithLocalSigner(connection, tx, takerKeypair);
 
       // 6) Refresh Maker balances after the swap
@@ -1033,8 +1244,3 @@ function App() {
 }
 
 export default App;
-
-
-
-
-
