@@ -12,70 +12,133 @@ import {
   TOKEN_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID,
   createMint,
-  getAssociatedTokenAddress,
   mintTo,
+  getAssociatedTokenAddress,
   createAssociatedTokenAccountInstruction,
 } from "@solana/spl-token";
 
 import { assert } from "chai";
 
-// Type of your program account (you can replace `any` with the real IDL type if you have it)
 type CoffeeExchangeProgram = Program<any>;
 
-describe("coffee_exchange", () => {
-  /**
-   * 1) Anchor provider & program setup
-   *
-   * We use AnchorProvider.local(), which expects a local validator
-   * on 127.0.0.1:8899. `anchor test` will handle booting it for us.
-   */
-  const provider = anchor.AnchorProvider.local();
-  anchor.setProvider(provider);
+describe("Coffee Exchange Test Suite", () => {
 
-  const program = anchor.workspace
-    .coffee_exchange as CoffeeExchangeProgram;
-  const connection = provider.connection;
+  // Shared objects across tests
 
-  // Local wallet used by Anchor as payer/maker
-  const payer = (provider.wallet as anchor.Wallet).payer;
-  const maker = payer.publicKey;
 
-  // Global vars shared between tests (we rely on Mocha's sequential execution)
+  let provider: anchor.AnchorProvider;
+  let program: CoffeeExchangeProgram;
+  let connection: anchor.web3.Connection;
+
+  let payer: anchor.web3.Keypair;
+  let maker: PublicKey;
+
   let tokenMintA: PublicKey;
   let tokenMintB: PublicKey;
-  let makerTokenAccountA: PublicKey; // ATA of maker for Mint A
+  let makerTokenAccountA: PublicKey;
+
+  
   let offerPda: PublicKey;
-  let vault: PublicKey; // ATA of offer PDA for Mint A
+  let vault: PublicKey;
+
+  
   let tokenAOfferedAmount: anchor.BN;
   let tokenBWantedAmount: anchor.BN;
+
+  
   const decimals = 6;
 
-  it("Smoke Testing", async () => {
-    console.log("Program ID: ", program.programId.toBase58());
+  
+  // Helper: Create an ATA (Associated Token Account) for a given owner/mint
+  
 
-    const expectedProgramId =
-      "9VdKGKXs5ZJd6Cr9GtJcPP8fdUSmRgvkYScvhi1oPkFc";
+  async function createAta(
+    owner: PublicKey,
+    mint: PublicKey
+  ): Promise<PublicKey> {
+    
+    const ata = await getAssociatedTokenAddress(
+      mint,
+      owner,
+      false, // owner is an on-curve key
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
 
-    // We don't hard-fail here, only warn if there's a mismatch.
-    if (program.programId.toBase58() !== expectedProgramId) {
-      console.warn(
-        "Warning: programId does not match expected. " +
-          "Check if your Anchor.toml and declare_id! in lib.rs are aligned."
-      );
-    }
+    const ix = createAssociatedTokenAccountInstruction(
+      payer.publicKey, // fee payer
+      ata,             // new ATA address
+      owner,           // ATA owner
+      mint,
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
 
-    assert.ok(program.programId instanceof PublicKey);
-  });
+    const tx = new Transaction().add(ix);
+    await provider.sendAndConfirm(tx, [payer]);
 
-  it("MAKE_OFFER with real mints and token accounts", async () => {
-    /**
-     * 2) Create Mint A and Mint B on the local validator
-     */
+    return ata;
+  }
+
+  
+  // Helper: Derive Offer PDA
+  
+
+  function deriveOfferPda(maker: PublicKey, id: anchor.BN): PublicKey {
+  
+    const [pda] = PublicKey.findProgramAddressSync(
+      [
+        Buffer.from("offer"),
+        maker.toBuffer(),
+        Buffer.from(id.toArray("le", 8)), // u64 LE
+      ],
+      program.programId
+    );
+    return pda;
+  }
+
+  
+  // Helper: Derive Vault ATA owned by the Offer PDA
+  
+
+  async function deriveVaultAta(
+    mint: PublicKey,
+    offer: PublicKey
+  ): Promise<PublicKey> {
+  
+    return getAssociatedTokenAddress(
+      mint,
+      offer,
+      true, // owner is off-curve (PDA)
+      TOKEN_PROGRAM_ID,
+      ASSOCIATED_TOKEN_PROGRAM_ID
+    );
+  }
+
+  
+  // Global setup (runs once before all tests)
+  
+
+  before(async () => {
+  
+    provider = anchor.AnchorProvider.local();
+    anchor.setProvider(provider);
+  
+    program = anchor.workspace.coffee_exchange as CoffeeExchangeProgram;
+
+    connection = provider.connection;
+    payer = (provider.wallet as anchor.Wallet).payer;
+    maker = payer.publicKey;
+
+
+    // Create Mint A and Mint B (SPL tokens)
+
+
     tokenMintA = await createMint(
       connection,
       payer,
       payer.publicKey, // mint authority
-      null, // freeze authority
+      null,            // freeze authority (none)
       decimals,
       undefined,
       undefined,
@@ -85,7 +148,7 @@ describe("coffee_exchange", () => {
     tokenMintB = await createMint(
       connection,
       payer,
-      payer.publicKey,
+      payer.publicKey, // same mint authority for convenience
       null,
       decimals,
       undefined,
@@ -93,89 +156,71 @@ describe("coffee_exchange", () => {
       TOKEN_PROGRAM_ID
     );
 
-    console.log("tokenMintA:", tokenMintA.toBase58());
-    console.log("tokenMintB:", tokenMintB.toBase58());
+    
+    // Create Maker's ATA for Mint A and mint some tokens
+    
 
-    /**
-     * 3) Derive and create the maker's ATA for Mint A manually
-     */
-    makerTokenAccountA = await getAssociatedTokenAddress(
-      tokenMintA,
-      maker,
-      false, // maker is an on-curve key
-      TOKEN_PROGRAM_ID,
-      ASSOCIATED_TOKEN_PROGRAM_ID
-    );
+    makerTokenAccountA = await createAta(maker, tokenMintA);
 
-    // Create the ATA via explicit transaction
-    {
-      const tx = new Transaction().add(
-        createAssociatedTokenAccountInstruction(
-          payer.publicKey, // payer for the ATA creation
-          makerTokenAccountA,
-          maker,
-          tokenMintA,
-          TOKEN_PROGRAM_ID,
-          ASSOCIATED_TOKEN_PROGRAM_ID
-        )
-      );
-
-      await provider.sendAndConfirm(tx, [payer]);
-    }
-
-    console.log("makerTokenAccountA:", makerTokenAccountA.toBase58());
-
-    /**
-     * 4) Mint some amount of token A to the maker's ATA
-     */
-    tokenAOfferedAmount = new anchor.BN(1_000_000); // 1 token if decimals = 6
+    // Maker offers 1.0 token A (assuming 6 decimals) in the first offer
+    tokenAOfferedAmount = new anchor.BN(1_000_000);
 
     await mintTo(
       connection,
-      payer, // fee payer
+      payer,
       tokenMintA,
       makerTokenAccountA,
-      payer, // mint authority
+      payer,
       tokenAOfferedAmount.toNumber(),
       [],
       undefined,
       TOKEN_PROGRAM_ID
     );
 
+    // For simplicity, this will be the default "wanted amount" in Mint B
+    tokenBWantedAmount = new anchor.BN(2_000_000);
+
+    console.log("=== Global setup completed ===");
+    console.log("Program:", program.programId.toBase58());
+    console.log("Mint A:", tokenMintA.toBase58());
+    console.log("Mint B:", tokenMintB.toBase58());
+    console.log("Maker:", maker.toBase58());
+    console.log("Maker ATA (A):", makerTokenAccountA.toBase58());
+  });
+
+  
+  // HAPPY PATH TESTS
+  
+
+  it("Smoke Test - program loaded and ID matches", async () => {
+    const expectedProgramId =
+      "9VdKGKXs5ZJd6Cr9GtJcPP8fdUSmRgvkYScvhi1oPkFc";
+
+    if (program.programId.toBase58() !== expectedProgramId) {
+      console.warn(
+        "Warning: programId does not match expected. " +
+          "Check Anchor.toml and declare_id! in lib.rs."
+      );
+    }
+
+    assert.ok(program.programId instanceof PublicKey, "Invalid programId");
+  });
+
+  it("MAKE_OFFER with real mints and token accounts", async () => {
     /**
-     * 5) Derive the PDA for the Offer account
+     * This test creates a valid offer:
+     * - Maker deposits token A into the vault (ATA owned by Offer PDA)
+     * - Offer state is initialized on-chain
      */
+
     const id = new anchor.BN(1);
 
-    [offerPda] = PublicKey.findProgramAddressSync(
-      [
-        Buffer.from("offer"),
-        maker.toBuffer(),
-        Buffer.from(id.toArray("le", 8)), // u64 little-endian
-      ],
-      program.programId
-    );
+    // Derive Offer PDA and Vault ATA
+    offerPda = deriveOfferPda(maker, id);
+    vault = await deriveVaultAta(tokenMintA, offerPda);
 
-    console.log("offerPda:", offerPda.toBase58());
-
-    /**
-     * 6) Compute the expected vault ATA for Offer + Mint A
-     *    (this ATA will be created by the program using associated_token + init)
-     */
-    vault = await getAssociatedTokenAddress(
-      tokenMintA,
-      offerPda,
-      true, // owner is PDA (off-curve)
-      TOKEN_PROGRAM_ID,
-      ASSOCIATED_TOKEN_PROGRAM_ID
-    );
-
-    console.log("vault (ATA for offer+mintA):", vault.toBase58());
-
-    /**
-     * 7) Call make_offer on the program
-     */
-    tokenBWantedAmount = new anchor.BN(2_000_000); // arbitrary wanted amount in Mint B
+    console.log("Offer PDA:", offerPda.toBase58());
+    console.log("Vault ATA:", vault.toBase58());
 
     const txSig = await program.methods
       .makeOffer(id, tokenAOfferedAmount, tokenBWantedAmount)
@@ -194,52 +239,43 @@ describe("coffee_exchange", () => {
 
     console.log("make_offer tx:", txSig);
 
-    /**
-     * 8) Validate on-chain state of the Offer account
-     */
-    const offerAccount: any = await program.account.offer.fetch(offerPda);
+    // Fetch the on-chain Offer account and validate fields
+    const offerState: any = await program.account.offer.fetch(offerPda);
 
     assert.strictEqual(
-      offerAccount.id.toNumber(),
+      offerState.id.toNumber(),
       id.toNumber(),
       "Offer id mismatch"
     );
-    assert.ok(offerAccount.maker.equals(maker), "Offer maker mismatch");
+    assert.ok(offerState.maker.equals(maker), "Offer maker mismatch");
     assert.ok(
-      offerAccount.tokenMintA.equals(tokenMintA),
+      offerState.tokenMintA.equals(tokenMintA),
       "Offer tokenMintA mismatch"
     );
     assert.ok(
-      offerAccount.tokenMintB.equals(tokenMintB),
+      offerState.tokenMintB.equals(tokenMintB),
       "Offer tokenMintB mismatch"
     );
     assert.strictEqual(
-      offerAccount.tokenBWantedAmount.toNumber(),
+      offerState.tokenBWantedAmount.toNumber(),
       tokenBWantedAmount.toNumber(),
       "Offer tokenBWantedAmount mismatch"
     );
   });
 
   it("TAKE_OFFER - transfer tokens and close offer & vault", async () => {
-    /**
-     * At this point we already have:
-     * - tokenMintA, tokenMintB
-     * - makerTokenAccountA
-     * - offerPda & vault
-     * - tokenBWantedAmount (what taker has to pay)
-     */
-
-    // 1) Create a taker (different signer from maker)
+    
+    // 1) Create a taker keypair (different signer from maker)
     const taker = Keypair.generate();
 
-    // Airdrop SOL so the taker can pay for rent and fees
+    // Airdrop SOL to cover rent and fees for the taker
     const airdropSig = await connection.requestAirdrop(
       taker.publicKey,
       2 * anchor.web3.LAMPORTS_PER_SOL
     );
     await connection.confirmTransaction(airdropSig, "confirmed");
 
-    // 2) Derive and create taker's ATA for Mint B manually
+    // 2) Create ATA for taker with Mint B (the currency they will pay with)
     const takerTokenAccountB = await getAssociatedTokenAddress(
       tokenMintB,
       taker.publicKey,
@@ -263,22 +299,24 @@ describe("coffee_exchange", () => {
       await provider.sendAndConfirm(tx, [payer]);
     }
 
-    console.log("takerTokenAccountB:", takerTokenAccountB.toBase58());
+    console.log("Taker ATA (B):", takerTokenAccountB.toBase58());
 
     // 3) Mint enough token B to the taker so they can pay the offer
     await mintTo(
       connection,
-      payer, // fee payer
+      payer,
       tokenMintB,
       takerTokenAccountB,
-      payer, // mint authority
+      payer,
       tokenBWantedAmount.toNumber(),
       [],
       undefined,
       TOKEN_PROGRAM_ID
     );
 
-    // 4) Derive expected taker ATA for Mint A
+    // 4) Derive expected ATA addresses:
+    //    - taker receives token A
+    //    - maker receives token B
     const takerTokenAccountAAddr = await getAssociatedTokenAddress(
       tokenMintA,
       taker.publicKey,
@@ -287,7 +325,6 @@ describe("coffee_exchange", () => {
       ASSOCIATED_TOKEN_PROGRAM_ID
     );
 
-    // 5) Derive expected maker ATA for Mint B
     const makerTokenAccountBAddr = await getAssociatedTokenAddress(
       tokenMintB,
       maker,
@@ -297,15 +334,15 @@ describe("coffee_exchange", () => {
     );
 
     console.log(
-      "takerTokenAccountA (expected):",
+      "Taker ATA (A, expected):",
       takerTokenAccountAAddr.toBase58()
     );
     console.log(
-      "makerTokenAccountB (expected):",
+      "Maker ATA (B, expected):",
       makerTokenAccountBAddr.toBase58()
     );
 
-    // 6) Call take_offer on the program
+    // 5) Execute `take_offer` instruction
     const txSig = await program.methods
       .takeOffer()
       .accounts({
@@ -327,57 +364,35 @@ describe("coffee_exchange", () => {
 
     console.log("take_offer tx:", txSig);
 
-    // 7) Offer account must be closed (close = maker in TakeOffer)
+    // 6) Check that the Offer account is closed
     const offerAccountInfo = await connection.getAccountInfo(offerPda);
     assert.strictEqual(
       offerAccountInfo,
       null,
-      "Offer account should be closed"
+      "Offer account should be closed after take_offer"
     );
 
-    // 8) Vault ATA must also be closed
+    // 7) Check that the vault token account is also closed
     const vaultInfo = await connection.getAccountInfo(vault);
     assert.strictEqual(
       vaultInfo,
       null,
-      "Vault token account should be closed"
+      "Vault token account should be closed after take_offer"
     );
   });
 
-  /**
-   * =========================
-   * UNHAPPY PATH TESTS
-   * =========================
-   */
+  
+  // UNHAPPY PATH TESTS
+  
 
   it("MAKE_OFFER should fail if maker has insufficient token A balance", async () => {
-    /**
-     * At this point, after TAKE_OFFER:
-     * - makerTokenAccountA no longer has token A (it was transferred to taker).
-     * So any positive amount we try to offer again will cause
-     * "insufficient funds" inside the SPL Token program.
-     */
-
+  
     const id = new anchor.BN(2);
 
-    const [offerPda2] = PublicKey.findProgramAddressSync(
-      [
-        Buffer.from("offer"),
-        maker.toBuffer(),
-        Buffer.from(id.toArray("le", 8)),
-      ],
-      program.programId
-    );
+    const offerPda2 = deriveOfferPda(maker, id);
+    const vault2 = await deriveVaultAta(tokenMintA, offerPda2);
 
-    const vault2 = await getAssociatedTokenAddress(
-      tokenMintA,
-      offerPda2,
-      true,
-      TOKEN_PROGRAM_ID,
-      ASSOCIATED_TOKEN_PROGRAM_ID
-    );
-
-    const tooMuch = new anchor.BN(5_000_000); // more than current balance (0)
+    const tooMuch = new anchor.BN(5_000_000); // More than current balance (0)
 
     let failed = false;
 
@@ -408,13 +423,13 @@ describe("coffee_exchange", () => {
         logs
       );
 
-      // Check that the SPL Token program complained about insufficient funds
+      // Look for the SPL Token error in the transaction logs
       const hasInsufficientFunds = logs.some((l) =>
         l.includes("Error: insufficient funds")
       );
       assert.isTrue(
         hasInsufficientFunds,
-        "Expected 'insufficient funds' error from SPL Token program"
+        "Expected 'insufficient funds' error from the SPL Token program"
       );
     }
 
@@ -425,11 +440,6 @@ describe("coffee_exchange", () => {
   });
 
   it("MAKE_OFFER should fail if makerTokenAccountA is not maker's ATA", async () => {
-    /**
-     * Here we intentionally pass an ATA whose owner is NOT the maker.
-     * This should trigger an Anchor `ConstraintTokenOwner` error on
-     * the `maker_token_account_a` account in your context.
-     */
 
     // Create a fake owner and its ATA for Mint A
     const fakeOwner = Keypair.generate();
@@ -457,23 +467,8 @@ describe("coffee_exchange", () => {
     }
 
     const id = new anchor.BN(3);
-
-    const [offerPda3] = PublicKey.findProgramAddressSync(
-      [
-        Buffer.from("offer"),
-        maker.toBuffer(),
-        Buffer.from(id.toArray("le", 8)),
-      ],
-      program.programId
-    );
-
-    const vault3 = await getAssociatedTokenAddress(
-      tokenMintA,
-      offerPda3,
-      true,
-      TOKEN_PROGRAM_ID,
-      ASSOCIATED_TOKEN_PROGRAM_ID
-    );
+    const offerPda3 = deriveOfferPda(maker, id);
+    const vault3 = await deriveVaultAta(tokenMintA, offerPda3);
 
     let failed = false;
 
@@ -484,8 +479,7 @@ describe("coffee_exchange", () => {
           maker,
           tokenMintA,
           tokenMintB,
-          // INTENTIONALLY WRONG: not maker's ATA
-          makerTokenAccountA: fakeOwnerAta,
+          makerTokenAccountA: fakeOwnerAta, // wrong owner on purpose
           offer: offerPda3,
           vault: vault3,
           systemProgram: SystemProgram.programId,
@@ -497,11 +491,11 @@ describe("coffee_exchange", () => {
       failed = true;
 
       console.log(
-        "Expected make_offer failure (wrong makerTokenAccountA / ATA constraint):",
+        "Expected make_offer failure (wrong makerTokenAccountA / ATA owner):",
         err?.message ?? err
       );
 
-      // If we have logs, we try to parse them as an AnchorError
+      // Try to parse Anchor error from logs (if available)
       const logs: string[] = (err as any).logs ?? [];
       if (logs.length > 0) {
         const anchorErr = anchor.AnchorError.parse(logs);
@@ -515,19 +509,12 @@ describe("coffee_exchange", () => {
 
     assert.isTrue(
       failed,
-      "Expected make_offer failure when makerTokenAccountA is not maker's ATA"
+      "Expected make_offer to fail when makerTokenAccountA is not maker's ATA"
     );
   });
 
   it("TAKE_OFFER should fail if taker has insufficient token B balance", async () => {
-    /**
-     * We create a fresh offer where the maker offers token A again,
-     * then we create a taker with an ATA for Mint B but we DO NOT
-     * mint enough tokens to cover `tokenBWantedAmount`.
-     * This should again trigger "Error: insufficient funds" inside
-     * the SPL Token program during the transfer in `take_offer`.
-     */
-
+ 
     // 1) Mint some token A back to the maker so a new offer can be created
     const newAmountA = new anchor.BN(1_000_000);
 
@@ -543,25 +530,10 @@ describe("coffee_exchange", () => {
       TOKEN_PROGRAM_ID
     );
 
-    // 2) Create a NEW offer (id = 4)
+    // 2) Create a new offer with id = 4
     const id = new anchor.BN(4);
-
-    const [offerPda4] = PublicKey.findProgramAddressSync(
-      [
-        Buffer.from("offer"),
-        maker.toBuffer(),
-        Buffer.from(id.toArray("le", 8)),
-      ],
-      program.programId
-    );
-
-    const vault4 = await getAssociatedTokenAddress(
-      tokenMintA,
-      offerPda4,
-      true,
-      TOKEN_PROGRAM_ID,
-      ASSOCIATED_TOKEN_PROGRAM_ID
-    );
+    const offerPda4 = deriveOfferPda(maker, id);
+    const vault4 = await deriveVaultAta(tokenMintA, offerPda4);
 
     await program.methods
       .makeOffer(id, newAmountA, tokenBWantedAmount)
@@ -578,7 +550,7 @@ describe("coffee_exchange", () => {
       })
       .rpc();
 
-    // 3) Create a new taker with almost no token B
+    // 3) Create a "poor" taker with almost no token B
     const poorTaker = Keypair.generate();
 
     const airdropSig = await connection.requestAirdrop(
@@ -606,12 +578,11 @@ describe("coffee_exchange", () => {
           ASSOCIATED_TOKEN_PROGRAM_ID
         )
       );
-
       await provider.sendAndConfirm(tx, [payer]);
     }
 
-    // Mint 0 or a very small amount of token B (definitely less than tokenBWantedAmount)
-    const smallAmountB = new anchor.BN(1); // << way less than tokenBWantedAmount
+    // Mint a very small amount of token B (less than tokenBWantedAmount)
+    const smallAmountB = new anchor.BN(1);
     await mintTo(
       connection,
       payer,
