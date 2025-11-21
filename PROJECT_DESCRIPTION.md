@@ -129,20 +129,14 @@ PDA → closes vault → sends rent to Maker
 
 ```rust
 #[account]
+#[derive(InitSpace)]
 pub struct Offer {
-    pub id: u64,                // Unique offer ID
-    pub maker: Pubkey,          // Maker's wallet
-    pub token_mint_a: Pubkey,   // Mint for Arabica
-    pub token_mint_b: Pubkey,   // Mint for Robusta
-    pub token_b_wanted_amount: u64, // How much Robusta Maker wants
-    pub bump: u8,               // PDA bump
-pub struct Offer {
-    pub id: u64,                // Unique offer ID
-    pub maker: Pubkey,          // Maker's wallet
-    pub token_mint_a: Pubkey,   // Mint for Arabica
-    pub token_mint_b: Pubkey,   // Mint for Robusta
-    pub token_b_wanted_amount: u64, // How much Robusta Maker wants
-    pub bump: u8,               // PDA bump
+    pub id: u64,
+    pub maker: Pubkey,
+    pub token_mint_a: Pubkey,
+    pub token_mint_b: Pubkey,
+    pub token_b_wanted_amount: u64,
+    pub bump: u8,
 }
  ```    
 
@@ -168,7 +162,7 @@ They cover the full lifecycle of the escrow:
 cd anchor_project
 anchor test
 ```
-**Fuzz tests
+**Fuzz tests**
 
 ### Running Tests
 ```bash
