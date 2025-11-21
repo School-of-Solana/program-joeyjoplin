@@ -173,16 +173,6 @@ trident fuzz run fuzz_0
 
 ### Additional Notes for Evaluators
 
-The entire escrow flow is trustless and fully enforced by PDA-owned accounts.
-The frontend implements Anchor-compatible instruction encoding manually, demonstrating low-level Solana development.
-The Taker uses a local Keypair, proving that the smart contract does not rely on the frontend wallet beyond Maker actions.
-The project demonstrates mastery of:
-- SPL token creation
-- PDA vault authorities
-- Cross-wallet transaction flows
-- Closing token accounts safely
-- Encoding Anchor instructions by hand for browser compatibility
-
 This project goes beyond tutorial patterns and implements a practical two-asset escrow workflow that could be expanded into a real on-chain commodity marketplace.
 The entire escrow flow is trustless and fully enforced by PDA-owned accounts.
 The frontend implements Anchor-compatible instruction encoding manually, demonstrating low-level Solana development.
