@@ -168,6 +168,14 @@ They cover the full lifecycle of the escrow:
 cd anchor_project
 anchor test
 ```
+**Fuzz tests
+
+### Running Tests
+```bash
+# Commands to run your tests
+cd anchor_project/trident-tests
+trident fuzz run fuzz_0
+```
 
 ### Additional Notes for Evaluators
 
